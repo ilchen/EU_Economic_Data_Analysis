@@ -357,7 +357,7 @@ class Metrics:
                 if additional_share_class in tickers and main_share_class in tickers:
                     cap_df.loc[:, main_share_class] += cap_df.loc[:, additional_share_class]
                     cap_df.drop(additional_share_class, axis=1, inplace=True)
-        return cap_df if frequency in ['B', 'D', 'C'] else cap_df.resample(frequency).agg(method).dropna()
+        return cap_df if frequency in ['B', 'D', 'C'] else cap_df.resample(frequency).agg(method)
 
     def get_top_n_capitalization_companies_for_day(self, n, dt=None, merge_additional_share_classes=True):
         """
@@ -1215,6 +1215,15 @@ class USStockMarketMetrics(Metrics):
                 'INFO': pd.Series([392948672, 398916408, 396809671, 398358566, 398612292, 398841378, 399080370],
                                   index=pd.DatetimeIndex(['2019-12-31', '2020-02-29', '2020-05-31', '2020-08-31',
                                                           '2021-05-31', '2021-08-31', '2021-12-31']).map(last_bd)),
+                'JNPR': pd.Series([334400000, 333200000, 333000000, 332800000, 332500000, 332300000, 332100000,
+                                   331900000, 331700000, 331500000, 331300000, 331100000, 330900000, 330700000,
+                                   330500000, 330300000,330100000, 329900000, 329700000, 329500000],
+                                  index=pd.DatetimeIndex(['2020-02-14', '2020-04-30', '2020-07-31', '2020-10-30',
+                                                          '2021-02-05', '2021-04-23', '2021-07-23', '2021-10-22',
+                                                          '2022-02-04', '2022-04-22', '2022-07-22', '2022-10-21',
+                                                          '2023-02-03', '2023-04-21', '2023-07-21', '2023-10-20',
+                                                          '2024-02-02', '2024-04-19', '2024-07-19',
+                                                          '2024-10-18']).map(last_bd)),
                 'JWN': pd.Series([156346167, 157032858],
                                  index=pd.DatetimeIndex(['2020-03-11', '2020-05-30']).map(last_bd)),
                 'KSU': pd.Series([90964664, 90980440],
@@ -1360,11 +1369,15 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
 
     @staticmethod
     def get_aex_components():
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                          '(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
         # URL of the AEX index Wikipedia page
         url = 'https://en.wikipedia.org/wiki/AEX_index'
         try:
             # Fetch all tables from the Wikipedia page
-            tables = pd.read_html(url)
+            tables = pd.read_html(url, storage_options=headers)
             #print(f"Found {len(tables)} tables on the page")
         except Exception as e:
             #print(f"Error fetching tables: {e}")
