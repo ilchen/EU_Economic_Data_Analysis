@@ -32,6 +32,11 @@ class Metrics:
     UNIDENTIFIED_SECTOR = 'unidentified'
     BANKING_INDUSTRIES = {'capital-markets', 'banks-diversified', 'banks-regional'}
 
+    WIKIPEDIA_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                      '(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+
     def __init__(self, tickers, additional_share_classes=None, stock_index=None, start=None, hist_shares_outs=None,
                  tickers_to_correct_for_splits=None, currency_conversion_df=None):
         """
@@ -748,8 +753,7 @@ class Metrics:
         for ticker in self.ticker_symbols.keys():
             if not self.is_ticker_in_market(ticker, dt): continue
             sector_key = self.tickers.tickers[ticker].info.get('sectorKey', Metrics.UNIDENTIFIED_SECTOR)
-            ret[sector_key] += self.data.loc[dt, (Metrics.CLOSE, ticker)]\
-                                  * self.shares_outstanding[ticker].loc[dt]
+            ret[sector_key] += self.capitalization.loc[dt, ticker]
 
         return pd.Series(ret) / self.capitalization.loc[dt, Metrics.CAPITALIZATION]
 
@@ -1077,12 +1081,8 @@ class USStockMarketMetrics(Metrics):
         share classes as part of the index, the keys are additional shares ticker symbols and values
         are the first share class (typically class A). Three corporations in the index have class B or class C shares.
         """
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                          '(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
         table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies',
-                             storage_options=headers)
+                             storage_options=Metrics.WIKIPEDIA_HEADERS)
         df = table[0]
         # Correction for Yahoo-Finance's representation of Class B shares
         sp500_components = [ticker.replace('.', '-') for ticker in df['Symbol'].to_list()]
@@ -1134,6 +1134,15 @@ class USStockMarketMetrics(Metrics):
                 'ALXN': pd.Series([221400872, 220827431, 218845432, 219847960, 221019230],
                                   index=pd.DatetimeIndex(['2020-01-29', '2020-05-04', '2020-10-27', '2021-02-12',
                                                           '2021-04-21']).map(last_bd)),
+                'ANSS': pd.Series([85914375, 85595438, 85789237, 85884127, 86751764, 87151573, 87252523, 87252950,
+                                   87229991, 86990120, 87068665, 87112235, 87085890, 86661338, 86791073, 86872803,
+                                   87017807, 87299981, 87386644, 87449954, 87651781, 87916143],
+                                  index=pd.DatetimeIndex(['2020-02-27', '2020-05-06', '2020-08-05', '2020-11-04',
+                                                          '2021-02-24', '2021-05-05', '2021-08-04', '2021-11-03',
+                                                          '2022-02-23', '2022-05-04', '2022-08-03', '2022-11-02',
+                                                          '2023-02-22', '2023-05-03', '2023-08-02', '2023-11-01',
+                                                          '2024-02-21', '2024-05-01', '2024-07-31', '2024-11-01',
+                                                          '2024-02-14', '2025-04-25']).map(last_bd)),
                 'ATVI': pd.Series([769221524, 770485455, 772857185, 777016759, 782306592, 782625319, 784274126,
                                    786158727, 786798320],
                                   index=pd.DatetimeIndex(['2020-02-20', '2020-04-28', '2020-10-22', '2021-04-27',
@@ -1200,18 +1209,30 @@ class USStockMarketMetrics(Metrics):
                                                           '2021-02-19', '2021-04-30']).map(last_bd)),
                 'GOOG': pd.Series([340979832, 336162278, 333631113, 329867212, 327556472, 323580001, 320168491,
                                    317737778, 315639479, 313376417, 311278353, 6163000000, 6086000000, 5968000000,
-                                   5801000000],
+                                   5801000000, 5725000000, 5671000000],
                                   index=pd.DatetimeIndex(['2020-01-27', '2020-04-21', '2020-07-23', '2020-10-22',
                                                           '2021-01-26', '2021-04-20', '2021-07-20', '2021-10-19',
                                                           '2022-01-25', '2022-04-19', '2022-07-15', '2022-07-22',
-                                                          '2022-10-18', '2023-01-26', '2023-07-18']).map(last_bd)),
+                                                          '2022-10-18', '2023-01-26', '2023-07-18', '2023-10-17',
+                                                          '2024-01-23']).map(last_bd)),
                 'GOOGL': pd.Series([299895185, 300050444, 300471156, 300643829, 300737081, 300746844, 301084627,
                                     300809676, 300754904, 300763622, 300446626, 5996000000, 5973000000, 5956000000,
-                                    5933000000],
+                                    5933000000, 5918000000, 5893000000],
                                    index=pd.DatetimeIndex(['2020-01-27', '2020-04-21', '2020-07-23', '2020-10-22',
                                                            '2021-01-26', '2021-04-20', '2021-07-20', '2021-10-19',
                                                            '2022-01-25', '2022-04-19', '2022-07-15', '2022-07-22',
-                                                           '2022-10-18', '2023-01-26', '2023-07-18']).map(last_bd)),
+                                                           '2022-10-18', '2023-01-26', '2023-07-18', '2023-10-17',
+                                                           '2024-01-23']).map(last_bd)),
+                'HES': pd.Series([305214587, 307158340, 307144424, 307077424, 306986553, 308436780, 309672952,
+                                  309726894, 309745523, 311262547, 309614906, 308308466, 306180424, 307051889,
+                                  307061031, 307151680, 307152064, 308111879, 308114909, 308118241, 308291660,
+                                  309271043],
+                                 index=pd.DatetimeIndex(['2020-02-20', '2020-05-07', '2020-08-06', '2020-11-05',
+                                                         '2021-03-01', '2021-05-06', '2021-08-05', '2021-11-04',
+                                                         '2022-03-01', '2022-05-05', '2022-08-04', '2022-11-03',
+                                                         '2023-02-24', '2023-05-04', '2023-08-03', '2023-11-02',
+                                                         '2024-02-26', '2024-05-07', '2024-08-08', '2024-11-06',
+                                                         '2025-02-27', '2025-05-08']).map(last_bd)),
                 'INFO': pd.Series([392948672, 398916408, 396809671, 398358566, 398612292, 398841378, 399080370],
                                   index=pd.DatetimeIndex(['2019-12-31', '2020-02-29', '2020-05-31', '2020-08-31',
                                                           '2021-05-31', '2021-08-31', '2021-12-31']).map(last_bd)),
@@ -1369,15 +1390,11 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
 
     @staticmethod
     def get_aex_components():
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                          '(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
         # URL of the AEX index Wikipedia page
         url = 'https://en.wikipedia.org/wiki/AEX_index'
         try:
             # Fetch all tables from the Wikipedia page
-            tables = pd.read_html(url, storage_options=headers)
+            tables = pd.read_html(url, storage_options=Metrics.WIKIPEDIA_HEADERS)
             #print(f"Found {len(tables)} tables on the page")
         except Exception as e:
             #print(f"Error fetching tables: {e}")
@@ -1399,7 +1416,9 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
 
             # If at least 3 columns match, assume this is the composition table
             if len(matching_cols) >= 3:
-                return  [component + '.AS' for component in df.loc[:, 'Ticker symbol']]
+                # Since Wikipedia doesn't yet reflect the extension of the index to 30 components, adjustimg manually
+                return  [component + '.AS' for component in df.loc[:, 'Ticker symbol']]\
+                         + ['CVC.AS', 'INPST.AS', 'JDEP.AS', 'TKWY.AS', 'WDP.BR']
 
         return None
 
