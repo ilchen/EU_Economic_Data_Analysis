@@ -200,10 +200,9 @@ class Metrics:
                 # Correction for the shares outstanding for companies that have multiple classes of shares that
                 # are listed, e.g. Alphabet's Class A 'GOOGL' and Class C 'GOOG' stocks or 'BRK-A' and 'BRK-B'
                 shares_outstanding = self.tickers.tickers[ticker].info.get('sharesOutstanding')
-                if shares_outstanding is not None and shares_outstanding * 1.2 < shares_outst.iloc[-1].item():
-                    shares_outstanding2 = self.tickers.tickers[ticker].info.get('impliedSharesOutstanding')
-                    if not shares_outstanding2:
-                        shares_outstanding2 = shares_outst.iloc[-1].item()
+                if shares_outstanding and shares_outstanding * 1.2 < shares_outst.iloc[-1].item():
+                    shares_outstanding2 = self.tickers.tickers[ticker].info.get('impliedSharesOutstanding')\
+                                          or shares_outst.iloc[-1].item()
                     print('Correcting the number of shares outstanding for {:s} from {:d} to {:d}'
                           .format(ticker, shares_outst.iloc[-1].item(),
                                   int(shares_outst.iloc[-1].item() * shares_outstanding / shares_outstanding2)))
@@ -1064,7 +1063,7 @@ class USStockMarketMetrics(Metrics):
                           'ODFL', 'MCHP', 'APH', 'DTE', 'FTV', 'MTCH', 'MKC', 'MRK', 'PFE', 'RJF', 'RTX', 'ROL', 'TT',
                           'SLG', 'FTI', 'NVDA', 'CMG', 'AVGO', 'WRB', 'EXC', 'BWA', 'K', 'IP', 'O', 'PCAR', 'DHR',
                           'BBWI', 'BDX', 'ZBH', 'SRE', 'MMM', 'IBM', 'T', 'CTAS', 'DECK', 'SMCI', 'LRCX', 'J', 'TSCO',
-                          'ETR', 'LEN', 'WDC', 'FAST', 'ORLY'])
+                          'ETR', 'LEN', 'WDC', 'FAST', 'ORLY', 'HON', 'DD'])
 
         # Using Market Yield on U.S. Treasury Securities at 1-Year Constant Maturity, as proxy for riskless rate
         # Handy to get earlier data for more accurate estimates of volatility
@@ -1083,12 +1082,14 @@ class USStockMarketMetrics(Metrics):
         """
         table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies',
                              storage_options=Metrics.WIKIPEDIA_HEADERS)
-        df = table[0]
+        
+        TICKER_COLUMN = 'Symbol'
+        df = table[0] if TICKER_COLUMN in table[0].columns else table[1]
         # Correction for Yahoo-Finance's representation of Class B shares
-        sp500_components = [ticker.replace('.', '-') for ticker in df['Symbol'].to_list()]
+        sp500_components = [ticker.replace('.', '-') for ticker in df[TICKER_COLUMN].to_list()]
         # additional_share_classes = df.loc[df.loc[:, 'CIK'].duplicated(), 'Symbol'].to_list()
-        dict = df.loc[df.loc[:, 'CIK'].duplicated(keep=False), ['Symbol', 'CIK']].groupby('CIK')\
-                ['Symbol'].apply(list).to_dict()
+        dict = df.loc[df.loc[:, 'CIK'].duplicated(keep=False), [TICKER_COLUMN, 'CIK']].groupby('CIK')\
+                [TICKER_COLUMN].apply(list).to_dict()
         additional_share_classes = {}
         for cik, share_classes in dict.items():
             # The list of share_classes is guaranteed to have more than one value
@@ -1294,14 +1295,25 @@ class USStockMarketMetrics(Metrics):
                                                           '2021-02-09', '2021-04-23', '2021-10-22',
                                                           '2022-02-10', '2022-04-22', '2022-07-22']).map(last_bd)),
                 'V': pd.Series([1706024403, 1687112437, 1686007156, 1692383762, 1696113603, 1691806129, 1687643027,
-                                1669730762, 1658423632, 1645719350, 1635014650, 1628169181, 1624954064, 1618223392],
+                                1669730762, 1658423632, 1645719350, 1635014650, 1628169181, 1624954064, 1618223392,
+                                1606787603, 1580679900, 1581590212, 1574151974, 1670444965],
                                index=pd.DatetimeIndex(['2020-01-24', '2020-04-30', '2020-07-24', '2020-11-13',
                                                        '2021-01-22', '2021-04-23', '2021-07-23', '2021-11-10',
                                                        '2022-01-29', '2022-04-20', '2022-07-20', '2022-11-09',
-                                                       '2023-01-18', '2023-04-19']).map(last_bd)),
+                                                       '2023-01-18', '2023-04-19', '2023-07-19', '2023-11-08',
+                                                       '2024-01-17', '2024-04-17', '2023-07-17']).map(last_bd)),
                 'VAR': pd.Series([90814945, 90941138, 91355469, 91838813],
                                  index=pd.DatetimeIndex(['2020-05-01', '2020-07-31', '2020-11-13',
                                                          '2021-01-29']).map(last_bd)),
+                'WBA': pd.Series([880397199, 870178709, 866500000, 863901817, 864200000, 864882399, 865100000,
+                                  863272027, 863773464, 864256651, 864500000, 862503554, 862600000, 863261413,
+                                  862166970, 862500000, 863275037, 863700000, 864153468, 864737898, 865560675],
+                                 index=pd.DatetimeIndex(['2020-04-02', '2020-07-09', '2020-10-15', '2021-01-07',
+                                                         '2021-03-31', '2021-07-01', '2021-10-14', '2022-01-06',
+                                                         '2022-03-31', '2022-06-30', '2022-10-13', '2023-01-05',
+                                                         '2023-03-28', '2023-05-31', '2024-01-04', '2024-03-28',
+                                                         '2024-06-27', '2024-10-15', '2025-01-03', '2025-04-01',
+                                                         '2025-06-19']).map(last_bd)),
                 'WCG': pd.Series([50312077, 50327612],
                                  index=pd.DatetimeIndex(['2019-07-26', '2019-10-28']).map(last_bd)),
                 'WRK': pd.Series([258456273, 259255002, 259636357, 262653756, 263516869, 266116343, 267006103,
