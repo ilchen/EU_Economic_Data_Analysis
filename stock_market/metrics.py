@@ -1429,9 +1429,9 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
 
             # If at least 3 columns match, assume this is the composition table
             if len(matching_cols) >= 3:
-                # Since Wikipedia doesn't yet reflect the extension of the index to 30 components, adjustimg manually
-                return  [component + '.AS' for component in df.loc[:, 'Ticker symbol']]\
-                         + ['CVC.AS', 'INPST.AS', 'JDEP.AS', 'TKWY.AS', 'WDP.BR']
+                # Since Wikipedia doesn't yet reflect the extension of the index to 29 components, adjusting manually
+                return  [component for component in df.loc[:, 'Ticker']]\
+                         + ['CVC.AS', 'INPST.AS', 'JDEP.AS', 'WDP.BR']
 
         return None
 
