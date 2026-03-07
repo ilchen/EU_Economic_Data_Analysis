@@ -1460,7 +1460,7 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
             if len(matching_cols) >= 3:
                 # Since Wikipedia doesn't yet reflect the extension of the index to 29 components, adjusting manually
                 return  [component for component in df.loc[:, 'Ticker']]\
-                         + ['CVC.AS', 'INPST.AS', 'JDEP.AS', 'WDP.BR']
+                         + ['CVC.AS', 'INPST.AS', 'JDEP.AS', 'WDP.BR', 'MICC.AS']
 
         return None
 
@@ -1468,3 +1468,21 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
     def get_aex_historical_components(start=None):
         return Metrics.get_historical_components(NLStockMarketMetrics.get_aex_components(),
             './stock_market/aex_changes_since_2021.csv', start)
+
+    @staticmethod
+    def get_aex_historical_shares_outstanding():
+        """
+        Returns a dictionary whose keys are ticker symbols representing companies that were part of the AEX Index
+        at any time since of 2021 and whose values are pd.Series objects representing the number of shares outstanding
+        on a given reporting date. I populated the missing days by doing a forward fill followed by a backward fill.
+        """
+        last_bd = BDay(0).rollback
+        return {'TKWY.AS': pd.Series([150056000, 148808992, 211620992, 221134000, 212620992, 214966000, 214966000,
+                                      213476000, 15966000, 219966000, 219966000, 228942000, 214407008, 206252000,
+                                      205955008, 205955008, 210923008, 197694000, 198302000, 199916234],
+                                     index=pd.DatetimeIndex([
+                                         '2020-12-31', '2021-03-31', '2021-06-30', '2021-09-30',
+                                         '2021-12-31', '2022-03-31', '2022-06-30', '2022-09-30',
+                                         '2022-12-30', '2023-03-31', '2023-06-30', '2023-09-29',
+                                         '2023-12-29', '2024-03-28', '2024-06-28', '2024-09-30',
+                                         '2024-12-31', '2025-03-31', '2025-06-30', '2025-09-30']).map(last_bd))}
