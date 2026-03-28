@@ -150,7 +150,7 @@ class Metrics:
             if st < ed:
                 self.data.loc[st + BDay(1):ed, ([self.CLOSE, self.VOLUME], delisted_ticker)] = (f.loc[st], 0.)
 
-        if tickers_to_correct_for_splits is not None:
+        if tickers_to_correct_for_splits:
             # Ensure we don't bother with tickers that are not part of the market
             tickers_to_correct_for_splits = set(tickers_to_correct_for_splits) & self.ticker_symbols.keys()
             for ticker in tickers_to_correct_for_splits:
@@ -161,20 +161,21 @@ class Metrics:
                     f.to_csv(f'./stock_market/historical_equity_data/{ticker}.cvs')
 
                 f = f.set_axis(pd.DatetimeIndex(f.index, self.data.index.freq))
-                f = f.loc[self.data.index[0]:, ['close', 'volume']]
-                f.columns = pd.MultiIndex.from_tuples(list(zip([self.CLOSE, self.VOLUME], [ticker]*2)))
-
-                self.data.loc[self.data.index[0]:f.index[-1], ([self.CLOSE, self.VOLUME], ticker)] = f
+                if len(f.index.intersection(self.data.index)):
+                    f = f.loc[self.data.index[0]:, ['close', 'volume']]
+                    f.columns = pd.MultiIndex.from_tuples(list(zip([self.CLOSE, self.VOLUME], [ticker]*2)))
+    
+                    self.data.loc[self.data.index[0]:f.index[-1], ([self.CLOSE, self.VOLUME], ticker)] = f
 
         # Currency conversion
         if currency_conversion_df is not None:
             cur_comps_set = set(self.get_current_components())
             for ticker in self.ticker_symbols.keys():
-                sfx = self.get_exchange_suffix(ticker)
-                if sfx in currency_conversion_df.columns:
-                    self.data.loc[:, (self.CLOSE, ticker)] *= currency_conversion_df.loc[self.data.index, sfx]
+                currency = self.tickers.tickers[ticker].info.get('currency')
+                if currency in currency_conversion_df.columns:
+                    self.data.loc[:, (self.CLOSE, ticker)] *= currency_conversion_df.loc[self.data.index, currency]
                     if ticker in cur_comps_set:
-                        self.eps[ticker] *= currency_conversion_df.loc[self.data.index[-1], sfx]
+                        self.eps[ticker] *= currency_conversion_df.loc[self.data.index[-1], currency]
 
         self.shares_outstanding = {}
         for ticker in self.ticker_symbols.keys():
@@ -939,7 +940,7 @@ class Metrics:
         df_factory = lambda: pd.DataFrame(0., index=idx, columns=pd.date_range(first_qe, last_qe, freq='QE')[::-1])
         result = df_factory()
         result_sectors = defaultdict(df_factory)
-        for ticker in self.ticker_symbols.keys() if not tickers else tickers:
+        for ticker in (tickers or self.ticker_symbols.keys()):
             if ticker in self.additional_share_classes:
                 print(f'Ignoring additional share class for {ticker} to avoid double counting')
                 continue
@@ -971,13 +972,13 @@ class Metrics:
                 print(result.columns[(result.columns >= st) & (result.columns <= ed)])
 
             # Currency conversion if required
-            sfx = self.get_exchange_suffix(ticker)
-            if currency_conversion_df is not None and sfx in currency_conversion_df.columns:
-                convs = currency_conversion_df.loc[istmt.columns, sfx]
+            currency = self.tickers.tickers[ticker].info.get('financialCurrency')
+            if currency_conversion_df is not None and currency in currency_conversion_df.columns:
+                convs = currency_conversion_df.loc[istmt.columns, currency]
                 istmt *= convs
 
                 if len(cfstmt.columns) != 0:
-                    convs = currency_conversion_df.loc[cfstmt.columns, sfx]
+                    convs = currency_conversion_df.loc[cfstmt.columns, currency]
                     cfstmt *= convs
 
             # Make sure we align on calendar quarter end for those companies whose financial quarters
@@ -989,9 +990,9 @@ class Metrics:
             istmt = istmt.loc[:, ~istmt.columns.duplicated()]
             cfstmt = cfstmt.loc[:, ~cfstmt.columns.duplicated()]
 
-            if istmt.columns[0] > last_qe and (result.columns[4] not in istmt.columns
-                                               or (istmt.loc[idx_istmt, result.columns[4]]).isna().all()):
-                print(f'Need to provide values for {ticker} for {result.columns[4]:%Y-%m-%d}')
+            if istmt.columns[0] > last_qe and (result.columns[quarters-1] not in istmt.columns
+                                               or (istmt.loc[idx_istmt, result.columns[quarters-1]]).isna().all()):
+                print(f'Need to provide values for {ticker} for {result.columns[quarters-1]:%Y-%m-%d}')
 
             if istmt.columns[0] < last_qe <= ed:
                 print(f'Need to provide values for {ticker} for {last_qe:%Y-%m-%d}')
@@ -1459,8 +1460,9 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
             # If at least 3 columns match, assume this is the composition table
             if len(matching_cols) >= 3:
                 # Since Wikipedia doesn't yet reflect the extension of the index to 29 components, adjusting manually
-                return  [component for component in df.loc[:, 'Ticker']]\
-                         + ['CVC.AS', 'INPST.AS', 'JDEP.AS', 'WDP.BR', 'MICC.AS']
+                ret = [component for component in df.loc[:, 'Ticker']]
+                ret.remove('RAND.AS')
+                return  ret + ['CVC.AS', 'INPST.AS', 'JDEP.AS', 'WDP.BR', 'MICC.AS', 'SBMO.AS']
 
         return None
 
