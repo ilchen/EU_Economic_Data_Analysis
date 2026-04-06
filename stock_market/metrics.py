@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from pandas.tseries.offsets import YearBegin, BYearEnd, BDay, BMonthEnd, MonthBegin, QuarterEnd
+from pandas.tseries.offsets import YearBegin, BYearEnd, BDay, BMonthEnd, MonthBegin, QuarterEnd, YearEnd
 import pandas_datareader.data as web
 from math import sqrt, isclose
 from collections import defaultdict
@@ -326,8 +326,46 @@ class Metrics:
             ret = pd.Series(0., index=self.data.index)
             for ticker in tickers:
                 for (st, ed) in self.ticker_symbols[ticker]:
-                    ret += self.data.loc[st:ed, (Metrics.CLOSE, ticker)] * self.shares_outstanding[ticker].loc[st:ed]
+                    ret += self.capitalization.loc[st:ed, ticker]
             return ret if frequency in ['B', 'D', 'C'] else ret.resample(frequency).agg(method).dropna()
+
+    def get_capitalization_for_industries(self, frequency='ME', method='mean'):
+        """
+        Calculates the capitalization of a given market per constituent industry.
+        If a frequency less granular than daily is provided, the data is downsampled accordingly.
+        For the 'mean' method, the result is the average capitalization over each period.
+        For other supported methods ('first', 'last', 'min', 'max'), the capitalization is derived
+        from the respective day or value within each period.
+        """
+        self.validate_method(method)
+        ret = defaultdict(lambda: pd.Series(0., index=self.capitalization.index))
+        for ticker in self.ticker_symbols:
+            industry_key = self.tickers.tickers[ticker]\
+                .info.get('industryKey', self.get_industry_keys().get(ticker, self.UNIDENTIFIED_SECTOR))
+            ret[industry_key] = ret[industry_key].add(self.capitalization.loc[:, ticker], fill_value=0)
+        ret = pd.DataFrame(ret).sort_index(axis=1)
+
+        return ret if frequency in ['B', 'D', 'C'] else ret.resample(frequency).agg(method).dropna()
+
+    def get_capitalization_for_sectors(self, frequency='ME', method='mean'):
+        """
+        Calculates the capitalization of a given market per constituent sector.
+        If a frequency less granular than daily is provided, the data is downsampled accordingly.
+        For the 'mean' method, the result is the average capitalization over each period.
+        For other supported methods ('first', 'last', 'min', 'max'), the capitalization is derived
+        from the respective day or value within each period.
+        """
+        industries_cap_df = self.get_capitalization_for_industries(frequency, method)
+        ret = defaultdict(lambda: pd.Series(0., index=industries_cap_df.index))
+        
+        sector_cache = {}
+        for industry_key, industry_cap in industries_cap_df.items():
+            sector_key = sector_cache.setdefault(
+                industry_key,
+                yfin.Industry(industry_key).sector_key
+            )
+            ret[sector_key] += industry_cap
+        return pd.DataFrame(ret).sort_index(axis=1)
 
     def adjust_for_additional_share_classes(self, cap_series):
         for additional_share_class, main_share_class in self.additional_share_classes.items():
@@ -750,9 +788,11 @@ class Metrics:
 
         ret = defaultdict(float)
 
+        sectors_dict = self.get_sector_keys()
         for ticker in self.ticker_symbols.keys():
             if not self.is_ticker_in_market(ticker, dt): continue
-            sector_key = self.tickers.tickers[ticker].info.get('sectorKey', Metrics.UNIDENTIFIED_SECTOR)
+            sector_key = self.tickers.tickers[ticker].info.get('sectorKey',
+                                                               sectors_dict.get(ticker, Metrics.UNIDENTIFIED_SECTOR))
             ret[sector_key] += self.capitalization.loc[dt, ticker]
 
         return pd.Series(ret) / self.capitalization.loc[dt, Metrics.CAPITALIZATION]
@@ -818,6 +858,30 @@ class Metrics:
 
         # No matching period found
         return False
+
+    def get_industry_keys(self):
+        """
+        Returns a dictionary whose keys are delisted tickers that were once part of this market and whose values
+        are their corresponding industry keys.
+        """
+        return {}
+
+    def get_sector_keys(self):
+        """
+        Returns a dictionary whose keys are delisted tickers that were once part of this market and whose values
+        are their corresponding sector keys.
+        """
+
+        # Cache Industry → sector_key lookups
+        sector_cache = {}
+
+        return {
+            ticker: sector_cache.setdefault(
+                industry_key,
+                yfin.Industry(industry_key).sector_key
+            )
+            for ticker, industry_key in self.get_industry_keys().items()
+        }
 
     @staticmethod
     def get_historical_components(cur_components, file_name, start=None):
@@ -1032,6 +1096,133 @@ class Metrics:
 
         return result, result_sectors
 
+    def get_annual_stmt_data(self, years=5, currency_conversion_df=None, tickers=None, ignore_past_composition=True):
+        """
+        Calculates a cumulative value of a subset of annual income and cashflow statements' lines for all companies
+        making up the market represented by this object.
+
+        :param years: Number of trailing years to include in the aggregation
+        :param currency_conversion_df: for heterogeneous markets made up of stocks priced in different currencies,
+                       a DataFrame whose columns are suffixes such as '.L', '.SW', '.CO', etc. and whose
+                       rows are the corresponding conversion rates.
+        :param tickers: a list of one or more ticker symbols, if None the whole market implied by this object
+                        is analyzed
+        :param ignore_past_composition: a boolean indicating if analysis is based on the current composition of
+                                        the market (True)
+        :returns: Tuple[pd.DataFrame, Dict[str, pd.DataFrame]]:
+        - The first DataFrame contains market-wide cumulative values.
+        - The second maps sector keys to their respective cumulative DataFrames.
+        """
+        if tickers:
+            self.validate_tickers_in_market(tickers)
+        last_ye = YearEnd(0).rollback(self.data.index[-1])
+        first_ye = YearEnd(0).rollback(max(self.data.index[0], last_ye - pd.DateOffset(years=years-1)))
+
+        # Unfortunately 'Operating Income', 'Interest Expense', 'EBITDA', 'EBIT' are too frequently missing
+        # => not worthwhile adding them
+        # From cashflow statements only taking 'Capital Expenditure' and  'Cash Dividends Paid'
+        idx = pd.Index(['Total Revenue', 'Pretax Income', 'Net Income', 'Tax Provision',
+                        'Capital Expenditure', 'Purchase Of Business', 'Cash Dividends Paid'])
+        idx_istmt = idx[0:4]
+        df_factory = lambda: pd.DataFrame(0., index=idx, columns=pd.date_range(first_ye, last_ye, freq='YE')[::-1])
+        result = df_factory()
+        result_sectors = defaultdict(df_factory)
+        for ticker in (tickers or
+                       self.get_current_components() if ignore_past_composition else self.ticker_symbols.keys()):
+            if ticker in self.additional_share_classes:
+                print(f'Ignoring additional share class for {ticker} to avoid double counting')
+                continue
+
+            # Only looking at the last period of being part of the market
+            (st, ed) = self.ticker_symbols[ticker][-1]
+            st = pd.Timestamp(st)
+
+            # The company fell out of the market before the start of the timeframe under analysis
+            if ed is not None and pd.Timestamp(ed) < first_ye:
+                continue
+
+            # To ensure we are able to compare 'ed' with Timestamps
+            if ed is None:
+                ed = last_ye
+            else:
+                ed = pd.Timestamp(ed)
+
+            istmt = self.tickers.tickers[ticker].income_stmt
+            cfstmt = self.tickers.tickers[ticker].cash_flow
+
+            if len(istmt.columns) == 0:
+                print(f"Yahoo Finance doesn't have income statement for {ticker} for the following quarters")
+                print(result.columns[(result.columns >= st) & (result.columns <= ed)])
+                continue
+
+            if len(cfstmt.columns) == 0:
+                print(f"Yahoo Finance doesn't have cashflow statement for {ticker} for the following quarters")
+                print(result.columns[(result.columns >= st) & (result.columns <= ed)])
+
+            # Currency conversion if required
+            currency = self.tickers.tickers[ticker].info.get('financialCurrency')
+            if currency_conversion_df is not None and currency in currency_conversion_df.columns:
+                convs = currency_conversion_df.loc[istmt.columns, currency]
+                istmt *= convs
+
+                if len(cfstmt.columns) != 0:
+                    convs = currency_conversion_df.loc[cfstmt.columns, currency]
+                    cfstmt *= convs
+
+            # Make sure we align on calendar year-end for those companies whose financial years
+            # are not calendar-aligned
+            istmt = istmt.rename(QuarterEnd(0).rollback, axis=1)
+            cfstmt = cfstmt.rename(QuarterEnd(0).rollback, axis=1)
+            istmt = istmt.rename(YearEnd(0).rollforward, axis=1)
+            cfstmt = cfstmt.rename(YearEnd(0).rollforward, axis=1)
+
+            # Remove duplicate columns due to data quality issues
+            istmt = istmt.loc[:, ~istmt.columns.duplicated()]
+            cfstmt = cfstmt.loc[:, ~cfstmt.columns.duplicated()]
+
+            if istmt.columns[0] > last_ye and (result.columns[years-1] not in istmt.columns
+                                               or (istmt.loc[idx_istmt, result.columns[years-1]]).isna().all()):
+                print(f'Need to provide values for {ticker} for {result.columns[years-1]:%Y-%m-%d}')
+
+            if istmt.columns[0] < last_ye <= ed:
+                print(f'Need to provide values for {ticker} for {last_ye:%Y-%m-%d}')
+
+            istmt = istmt.loc[:, last_ye:].astype('float64')
+            cfstmt = cfstmt.loc[:, last_ye:].astype('float64')
+
+            # Make sure that we trim to the end of the last calendar year
+            common_years = result.columns.intersection(istmt.columns)
+            if len(cfstmt.columns) != 0:
+                common_years = common_years.intersection(cfstmt.columns)
+            common_idx = istmt.index.intersection(idx)
+            common_idx_cf = cfstmt.index.intersection(idx)
+
+            # Adjusting for when the company's stock was part of the market
+            if not ignore_past_composition:
+                common_years = common_years[(common_years >= st) & (common_years <= ed)]
+            if len(common_years) == 0:
+                # The stock wasn't part of the market during the timeframe under analysis
+                continue
+
+            if len(common_idx) < len(idx_istmt):
+                print(f'For {ticker} missing the following income statement lines:')
+                print(idx_istmt.difference(common_idx))
+            if istmt.loc[common_idx, common_years].loc[:, common_years[0]].isna().any():
+                print(f'Missing {common_years[0]:%Y-%m-%d} quarter data for {ticker}'
+                      ' for the following income statement lines:')
+                print(common_idx[istmt.loc[common_idx, common_years].loc[:, common_years[0]].isna()])
+
+            sector_key = self.tickers.tickers[ticker].info.get('sectorKey', Metrics.UNIDENTIFIED_SECTOR)
+            istmt_values = istmt.loc[common_idx, common_years].fillna(0.)
+            result.loc[common_idx, common_years] += istmt_values
+            result_sectors[sector_key].loc[common_idx, common_years] += istmt_values
+            if len(cfstmt.columns) != 0:
+                cfstmt_values = cfstmt.loc[common_idx_cf, common_years].fillna(0.)
+                result.loc[common_idx_cf, common_years] += cfstmt_values
+                result_sectors[sector_key].loc[common_idx_cf, common_years] += cfstmt_values
+
+        return result, result_sectors
+
 
 class USStockMarketMetrics(Metrics):
     def __init__(self, tickers, additional_share_classes=None, stock_index='^GSPC', start=None, hist_shares_outs=None):
@@ -1162,6 +1353,14 @@ class USStockMarketMetrics(Metrics):
                 'CERN': pd.Series([311937692, 304348600, 305381551, 306589898, 301317068, 294222760, 294098094],
                                   index=pd.DatetimeIndex(['2020-01-28', '2020-04-23', '2020-07-22', '2020-10-21',
                                                           '2021-04-30', '2021-10-25', '2022-04-26']).map(last_bd)),
+                'CMA': pd.Series([144154334, 141346049, 139034717, 139039348, 139087862, 139286040, 139612779,
+                                  133923650, 131148664, 131078743, 130760307, 130819770, 130952419, 131352922,
+                                  131669861, 131776523, 131872812, 132489667, 132587251],
+                                 index=pd.DatetimeIndex(['2019-10-25', '2020-02-07', '2020-04-24', '2020-07-27',
+                                                         '2020-10-28', '2021-02-05', '2021-04-26', '2021-07-27',
+                                                         '2021-10-27', '2022-02-14', '2022-04-25', '2022-07-26',
+                                                         '2022-10-26', '2023-02-10', '2023-04-26', '2023-07-24',
+                                                         '2023-10-26', '2024-02-26', '2024-04-24']).map(last_bd)),
                 'CTLT': pd.Series([164697598, 170226514, 170341553, 170787238, 171188042, 179104173, 179213237,
                                    179895677, 179963589, 180090483, 180271741,
                                    180641272, 180737675, 180979849, 181511586],
@@ -1361,6 +1560,24 @@ class USStockMarketMetrics(Metrics):
                                   index=pd.DatetimeIndex(['2020-01-10', '2020-04-24', '2020-07-10', '2020-10-09',
                                                           '2021-01-15', '2021-04-30', '2021-07-16', '2021-10-15',
                                                           '2022-01-14']).map(last_bd))}
+
+    def get_industry_keys(self):
+        return super().get_industry_keys() | \
+            {'ABMD': 'medical-devices', 'AGN': 'drug-manufacturers-general', 'ALXN': 'drug-manufacturers-general',
+             'ANSS': 'software-application', 'ATVI': 'electronic-gaming-multimedia',
+             'CERN': 'health-information-services', 'CMA': 'banks-regional', 'CTLT': 'diagnostics-research',
+             'CTXS': 'software-application', 'CXO': 'oil-gas-e-p', 'DFS': 'credit-services', 'DISCK': 'entertainment',
+             'DISH': 'entertainment', 'DRE': 'reit-industrial',
+             'ETFC': 'capital-markets', 'FISV': 'information-technology-services',
+             'FLIR': 'scientific-technical-instruments', 'HBI': 'luxury-goods',
+             'HES': 'oil-gas-e-p', 'INFO': 'financial-data-stock-exchanges', 'IPG': 'advertising-agencies',
+             'JNPR': 'communication-equipment', 'JWN': 'department-stores', 'K': 'packaged-foods', 'KSU': 'railroads',
+             'MRO': 'oil-gas-e-p', 'MXIM': 'semiconductors', 'NBL': 'oil-gas-e-p', 'NLSN': 'engineering-construction',
+             'PBCT': 'banks-regional', 'PXD': 'oil-gas-e-p', 'RTN': 'aerospace-defense', 'SBNY': 'banks-regional',
+             'SIVB': 'banks-regional', 'TIF': 'luxury-goods', 'TWTR': 'internet-content-information',
+             'VAR': 'medical-instruments-supplies', 'WBA': 'pharmaceutical-retailers', 'WCG': 'healthcare-plans',
+             'WRK': 'packaging-containers', 'XEC': 'oil-gas-e-p', 'XLNX': 'semiconductors'
+             }
 
 
 class EuropeBanksStockMarketMetrics(Metrics):
