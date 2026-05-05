@@ -732,21 +732,94 @@ class Metrics:
         """
         return self.get_excess_return_helper(years, frequency, True)
 
-    def get_roe_and_pb(self, tickers):
+    def get_roe_and_pb(self, tickers, forward_horizon: str="current"):
         """
-        Constructs a DataFrame indexed by 'tickers' and whose columns represent the current ROE (TTM) and Price to Book
-        of the corresponding tickers.
+        Constructs a DataFrame indexed by tickers with the following columns:
+          - ROE              : current reported ROE (TTM) from yfinance.info
+          - P/B              : current Price-to-Book from yfinance.info
+          - Forward ROE      : projected ROE for the selected fiscal year
+          - Forward P/B      : projected P/B for the selected fiscal year, assumes markets already
+                               take into account projected earnings growth and the current price reflects it
 
-        :returns: a pd.DataFrame object capturing the Sharpe ratio the ROE and Price to Book ratio for each index, it
-                  may contain NaN values in case Yahoo-Finance didn't have the data
+        Parameters
+        ----------
+        forward_horizon : str, default "current"
+            "current" → uses current fiscal year ('0y')
+            "next"    → uses next fiscal year ('+1y')
         """
-        ret = pd.DataFrame(index=tickers, columns=['ROE', 'P/B'])
+        ret = pd.DataFrame(index=tickers, columns=['ROE', 'P/B', 'Forward ROE'])
+
+        period_map = {"current": "0y", "next": "+1y"}
+        target_period = period_map.get(forward_horizon.lower(), "0y")
+
         for ticker in tickers:
-            if all(k in self.tickers.tickers[ticker].info for k in ('returnOnEquity', 'priceToBook')):
-                ret.loc[ticker, 'ROE'] = self.tickers.tickers[ticker].info['returnOnEquity']
-                ret.loc[ticker, 'P/B'] = self.tickers.tickers[ticker].info['priceToBook']
-                if ticker.endswith('.L'):
-                    ret.loc[ticker, 'P/B'] /= 100.
+            t = self.tickers.tickers[ticker]
+            info = t.info
+
+            # === CURRENT ROE & P/B ===
+            if all(k in info for k in ('returnOnEquity', 'priceToBook')):
+                ret.loc[ticker, 'ROE'] = info['returnOnEquity']
+                ret.loc[ticker, 'P/B'] = info['priceToBook']
+
+                # No longer needed
+                # if ticker.endswith('.L'):
+                #    ret.loc[ticker, 'P/B'] /= 100.
+
+            # === FORWARD ROE ===
+            try:
+                earnings_est = t.get_earnings_estimate()
+
+                # Get earnings estimates
+                eps_current = None
+                eps_target = None
+
+                if "0y" in earnings_est.index:
+                    eps_current = earnings_est.loc["0y", "avg"]
+                if target_period in earnings_est.index:
+                    eps_target = earnings_est.loc[target_period, "avg"]
+
+                if pd.notna(eps_target) and eps_target != 0:
+                    # Last reported book value per share (beginning of current year)
+                    book_value_begin = info.get('bookValue', 0.0)
+                    if pd.isna(book_value_begin):
+                        book_value_begin = 0.0
+
+                    payout_ratio = info.get('payoutRatio', 0.0)
+                    if pd.isna(payout_ratio):
+                        payout_ratio = 0.0
+
+                    # Step 1: Project book value at end of current year
+                    retained_current = eps_current * (1 - payout_ratio) if pd.notna(eps_current) else 0.0
+                    book_value_end_current = book_value_begin + retained_current
+
+                    # Step 2: For next year, use end-of-current as beginning
+                    if target_period == "+1y":
+                        book_value_begin_next = book_value_end_current
+                    else:
+                        book_value_begin_next = book_value_begin
+
+                    # Step 3: Project book value at end of target year
+                    retained_target = eps_target * (1 - payout_ratio)
+                    book_value_end_target = book_value_begin_next + retained_target
+
+                    # Step 4: Average book equity for the target year
+                    avg_book_equity = (book_value_begin_next + book_value_end_target) / 2
+
+                    # Step 5: Forward ROE
+                    if avg_book_equity > 0:
+                        forward_roe = eps_target / avg_book_equity
+                        ret.loc[ticker, 'Forward ROE'] = forward_roe
+
+                    # Step 6: Forward P/B
+                    market_price = info.get('currentPrice') or info.get('regularMarketPrice')
+                    if ticker.endswith('.L'):
+                        market_price /= 100.
+                    if pd.notna(market_price) and market_price > 0:
+                        ret.loc[ticker, 'Forward P/B'] = market_price / book_value_end_target
+
+            except Exception:
+                pass  # Leave as NaN if any data is missing
+
         return ret
 
     def get_banking_sector_components(self):
@@ -884,7 +957,8 @@ class Metrics:
         }
 
     def calculate_financial_metrics(self, tickers: list, expected_market_return: float = .05,
-                                    statutory_tax_rate: float = .21, currency_conversion_df = None) -> pd.DataFrame:
+                                    statutory_tax_rate: float = .21, currency_conversion_df = None,
+                                    include_operating_metrics: bool = False) -> pd.DataFrame:
         """
         Takes a list of ticker symbols and returns a pandas DataFrame with efficiency metrics (ROIC, WACC, ROE, Cost of Equity)
 
@@ -905,6 +979,18 @@ class Metrics:
                     if pd.notna(val):
                         return val
             return 0
+
+        def sum_values(df, date, possible_keys):
+            """Sum all non-NaN values from the list of possible keys (used for NOWC and NOLTA)."""
+            if date not in df.columns:
+                return 0.0
+            total = 0.0
+            for key in possible_keys:
+                if key in df.index:
+                    val = df.loc[key, date]
+                    if pd.notna(val):
+                        total += val
+            return total
 
         rows = []
 
@@ -938,6 +1024,7 @@ class Metrics:
             income_dates = sorted(income_stmt.columns)
 
             prev_total_equity = None
+            prev_net_debt = None
             prev_ic = None
             prev_gross_debt = None
             prev_effective_tax_rate = None
@@ -983,6 +1070,9 @@ class Metrics:
                 nopat = net_income + net_interest * (1 - effective_tax_rate)
                 recurring_nopat = nopat + non_recurring_items * (1 - effective_tax_rate)
                 recurring_net_income = net_income + non_recurring_items * (1 - effective_tax_rate)
+
+                # Sales
+                sales = get_value(income_stmt, date, ["Total Revenue", "Revenue", "Sales", "Net Sales"])
 
                 # === BALANCE SHEET ===
                 current_total_equity = get_value(balance_sheet, date,
@@ -1042,14 +1132,48 @@ class Metrics:
                         total_cash = cash + short_term_invest
                         current_gross_debt = abs(balance_sheet.loc["Net Debt", date]) + total_cash
 
-                # Some cash-rich companies such as Adyen might have large negative net debt, taking it into account...
-                invested_capital = current_total_equity + max(0, current_net_debt)
+                # For banks ROIC and invested capital are less clearly defined as for non-financial companies
+                if ticker.info['industryKey'] in self.BANKING_INDUSTRIES:
+                    invested_capital = current_total_equity + current_gross_debt
+                else:
+                    # Some cash-rich companies such as Adyen might have large negative net debt,
+                    # taking it into account...
+                    invested_capital = current_total_equity + max(0, current_net_debt)
+
+                # === OPERATING ASSETS (NOWC + NOLTA) ===
+                if include_operating_metrics:
+                    # Net Operating Working Capital (NOWC)
+                    op_current_assets = sum_values(balance_sheet, date, [
+                        "Accounts Receivable", "Receivables", "Net Receivables",
+                        "Inventory", "Inventories", "Prepaid Expenses", "Other Current Assets"
+                    ])
+                    op_current_liab = sum_values(balance_sheet, date, [
+                        "Accounts Payable", "Payables", "Accrued Expenses", "Accrued Liabilities",
+                        "Deferred Revenue", "Other Current Liabilities"
+                    ])
+                    nowc = op_current_assets - op_current_liab
+
+                    # Net Operating Long-Term Assets (NOLTA)
+                    op_lt_assets = sum_values(balance_sheet, date, [
+                        "Property Plant and Equipment Net", "Net PPE",
+                        "Operating Lease Right of Use Assets", "ROU Assets",
+                        "Goodwill", "Intangible Assets", "Capitalized Software"
+                    ])
+                    op_lt_liab = sum_values(balance_sheet, date, [
+                        "Operating Lease Liabilities", "Asset Retirement Obligations",
+                        "Other Long-term Liabilities"
+                    ])
+                    nolta = op_lt_assets - op_lt_liab
+                else:
+                    nowc = nolta = pd.NA
 
                 # === Averages & ROIC & ROE ===
                 if prev_ic is not None and prev_ic != 0:
                     avg_invested_capital = (invested_capital + prev_ic) / 2
+                    avg_net_debt = (prev_net_debt + current_net_debt) / 2
                 else:
                     avg_invested_capital = invested_capital
+                    avg_net_debt = current_net_debt if current_net_debt != 0 else pd.NA
 
                 avg_gross_debt = (current_gross_debt + prev_gross_debt) / 2\
                     if prev_gross_debt is not None else current_gross_debt
@@ -1088,8 +1212,12 @@ class Metrics:
                     wacc = cost_of_equity
 
                 # === EVA and MVA ===
-                eva = (roic - wacc) * avg_invested_capital
-                mva = market_debt + market_equity - current_gross_debt - invested_capital
+                if ticker.info['industryKey'] in self.BANKING_INDUSTRIES:
+                    eva = (roe - cost_of_equity) * avg_total_equity
+                else:
+                    eva = (roic - wacc) * avg_invested_capital
+                # mva = market_debt + market_equity - current_gross_debt - invested_capital
+                mva = market_debt + market_equity - current_gross_debt - current_total_equity
 
                 # Currency conversion if required
                 currency = ticker.info.get('financialCurrency')
@@ -1098,7 +1226,7 @@ class Metrics:
                     eva *= convs
                     mva *= convs
 
-                rows.append({
+                row = {
                     "symbol": symbol,
                     "year": year,
                     "Effective tax rate": effective_tax_rate,
@@ -1111,13 +1239,25 @@ class Metrics:
                     "WACC": wacc,
                     "EVA": eva,
                     "MVA": mva,
-                    "NOPAT": nopat,
-                    "Recurring NOPAT": recurring_nopat,
-                    "Invested capital": invested_capital,
-                })
+                }
+
+                if include_operating_metrics:
+                    row.update({
+                        "Sales": sales,
+                        "NOPAT": nopat,
+                        "Recurring NOPAT": recurring_nopat,
+                        "Interest/Avg. net debt": net_interest / avg_net_debt,
+                        "NOWC": nowc,
+                        "NOLTA": nolta,
+                        "Equity": current_total_equity,
+                        "Invested capital": invested_capital,
+                    })
+
+                rows.append(row)
 
                 prev_total_equity = current_total_equity
                 prev_ic = invested_capital
+                prev_net_debt = current_net_debt
                 prev_gross_debt = current_gross_debt
                 prev_effective_tax_rate = effective_tax_rate
 
@@ -1906,7 +2046,7 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
     @staticmethod
     def get_aex_components():
         # URL of the AEX index Wikipedia page
-        url = 'https://en.wikipedia.org/wiki/AEX_index'
+        url = "https://nl.wikipedia.org/wiki/AEX"
         try:
             # Fetch all tables from the Wikipedia page
             tables = pd.read_html(url, storage_options=Metrics.WIKIPEDIA_HEADERS)
@@ -1915,8 +2055,8 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
             #print(f"Error fetching tables: {e}")
             return None
 
-            # Keywords to identify the correct table
-        keywords = ['company', 'sector', 'ticker', 'weight']
+        # Keywords to identify the correct table
+        keywords = ["company", "sector", "ticker", "weight"]
 
         # Iterate through each table
         for i, df in enumerate(tables):
@@ -1931,10 +2071,8 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
 
             # If at least 3 columns match, assume this is the composition table
             if len(matching_cols) >= 3:
-                # Since Wikipedia doesn't yet reflect the extension of the index to 29 components, adjusting manually
-                ret = [component for component in df.loc[:, 'Ticker']]
-                ret.remove('RAND.AS')
-                return  ret + ['CVC.AS', 'INPST.AS', 'JDEP.AS', 'WDP.BR', 'MICC.AS', 'SBMO.AS']
+                return [component + ('.BR' if component == 'WDP' else '.AS')
+                        for component in df.loc[:, 'Ticker symbol']]
 
         return None
 
