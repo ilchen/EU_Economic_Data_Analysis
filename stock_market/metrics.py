@@ -2046,7 +2046,7 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
     @staticmethod
     def get_aex_components():
         # URL of the AEX index Wikipedia page
-        url = "https://nl.wikipedia.org/wiki/AEX"
+        url = 'https://en.wikipedia.org/wiki/AEX_index'
         try:
             # Fetch all tables from the Wikipedia page
             tables = pd.read_html(url, storage_options=Metrics.WIKIPEDIA_HEADERS)
@@ -2055,8 +2055,8 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
             #print(f"Error fetching tables: {e}")
             return None
 
-        # Keywords to identify the correct table
-        keywords = ["company", "sector", "ticker", "weight"]
+            # Keywords to identify the correct table
+        keywords = ['company', 'sector', 'ticker', 'weight']
 
         # Iterate through each table
         for i, df in enumerate(tables):
@@ -2071,8 +2071,10 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
 
             # If at least 3 columns match, assume this is the composition table
             if len(matching_cols) >= 3:
-                return [component + ('.BR' if component == 'WDP' else '.AS')
-                        for component in df.loc[:, 'Ticker symbol']]
+                # Since Wikipedia doesn't yet reflect the extension of the index to 29 components, adjusting manually
+                ret = [component for component in df.loc[:, 'Ticker']]
+                ret.remove('RAND.AS')
+                return  ret + ['CVC.AS', 'INPST.AS', 'WDP.BR', 'MICC.AS', 'SBMO.AS']
 
         return None
 

@@ -103,7 +103,7 @@ class CapChangePlotter:
                     colors.append(plt.get_cmap("Blues")(norm(v)))
                 else:
                     norm = plt.Normalize(data.min(), 0)
-                    colors.append(plt.get_cmap("Reds")(norm(v)))
+                    colors.append(plt.get_cmap("Reds")(1 - norm(v)))
         else:
             norm = plt.Normalize(data.min(), data.max())
             cmap_obj = plt.get_cmap(cmap_name)
