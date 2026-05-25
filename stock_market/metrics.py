@@ -731,11 +731,13 @@ class Metrics:
         """
         return self.get_excess_return_helper(years, frequency, True)
 
-    def get_roe_and_pb(self, tickers, forward_horizon: str="current"):
+    def get_roe_and_pb(self, tickers, forward_horizon: str="current",
+                       quarter_end: date | pd.Timestamp | str | None = None):
         """
         Constructs a DataFrame indexed by tickers with the following columns:
           - ROE              : current reported ROE (TTM) from yfinance.info
-          - P/B              : current Price-to-Book from yfinance.info
+          - P/B              : current Price-to-Book from yfinance.info (when quarter_end=None)
+                               or historical P/B from get_valuation_measures() (when quarter_end provided)
           - Forward ROE      : projected ROE for the selected fiscal year
           - Forward P/B      : projected P/B for the selected fiscal year, assumes markets already
                                take into account projected earnings growth and the current price reflects it
@@ -745,6 +747,10 @@ class Metrics:
         forward_horizon : str, default "current"
             "current" → uses current fiscal year ('0y')
             "next"    → uses next fiscal year ('+1y')
+        quarter_end : date | pd.Timestamp | str | None, default None
+            Quarter-end date for which to fetch P/B from get_valuation_measures().
+            If None, falls back to current behavior (latest from .info).
+            The date will be normalized to the nearest calendar quarter end if needed.
         """
         ret = pd.DataFrame(index=tickers, columns=['ROE', 'P/B', 'Forward ROE'])
 
@@ -762,7 +768,28 @@ class Metrics:
 
                 # No longer needed
                 # if ticker.endswith('.L'):
-                #    ret.loc[ticker, 'P/B'] /= 100.
+                #     ret.loc[ticker, 'P/B'] /= 100.
+
+            # A more accurate value of P/B
+            if quarter_end:
+                ret.loc[ticker, 'P/B'] = np.nan
+                val_measures = t.get_valuation_measures()
+
+                # Normalize quarter_end to QuarterEnd if needed
+                if not isinstance(quarter_end, pd.Timestamp):
+                    quarter_end = pd.Timestamp(quarter_end).normalize()
+                # Always apply rollforward
+                quarter_end = pd.offsets.QuarterEnd(0).rollforward(quarter_end)
+
+                # Depending on the exact shape of val_measures (it can vary by yfinance version)
+                # Typical cases: multi-index, columns as dates, or rows as periods
+                if not val_measures.empty:
+                    val_measures = val_measures.iloc[:, 1:].set_axis(pd.DatetimeIndex(val_measures.columns[1:]), axis=1)
+                    pb_idx = 'Price/Book' if 'Price/Book' in val_measures.index else 'priceToBook'
+                    try:
+                        ret.loc[ticker, 'P/B'] = pd.to_numeric(val_measures.loc[pb_idx, quarter_end], errors='coerce')
+                    except (KeyError, IndexError):
+                        pass
 
             # === FORWARD ROE ===
             try:
