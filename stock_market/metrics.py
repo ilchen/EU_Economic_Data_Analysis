@@ -74,7 +74,7 @@ class Metrics:
         self.data = self.data.loc[:, ([Metrics.CLOSE, Metrics.VOLUME])]
 
         # Required until the 'ignore_tz' parameter in the 'download' method starts working again
-        # self.data.index = self.data.index.tz_localize(None)
+        # self.data.index = self.data.index.tz_localize(
 
         # If some stocks that are no longer part of the index and are no longer listed were traded over the counter,
         # while stocks still in the index were not traded, we need to make an adjustment
@@ -1668,14 +1668,24 @@ class USStockMarketMetrics(Metrics):
                           'SLG', 'FTI', 'NVDA', 'CMG', 'AVGO', 'WRB', 'EXC', 'BWA', 'K', 'IP', 'O', 'PCAR', 'DHR',
                           'BBWI', 'BDX', 'ZBH', 'SRE', 'MMM', 'IBM', 'T', 'CTAS', 'DECK', 'SMCI', 'LRCX', 'J', 'TSCO',
                           'ETR', 'LEN', 'WDC', 'FAST', 'ORLY', 'HON', 'DD', 'NFLX', 'NOW', 'TPL', 'CMCSA', 'AMCR',
-                          'BKNG', 'CVNA'])
+                          'BKNG', 'CVNA', 'FDX', 'KLAC'])
 
         # Using Market Yield on U.S. Treasury Securities at 1-Year Constant Maturity, as proxy for riskless rate
         # Handy to get earlier data for more accurate estimates of volatility
-        self.riskless_rate = web.get_data_fred('DGS1', start - pd.DateOffset(years=3))
+        try:
+            self.riskless_rate = web.get_data_fred('DGS1', start - pd.DateOffset(years=3), timeout=90)
+        except Exception as e:
+            try:
+                self.riskless_rate = web.get_data_fred('WGS1YR', start - pd.DateOffset(years=3), timeout=90)\
+                    .resample('B').ffill()
+            except Exception as e2:
+                print(f"⚠️  FRED ReadTimeout / network error fetching DGS1/WGS1YR (riskless rate): {e2}\n"
+                      f"   Proceeding with self.riskless_rate = None")
+                self.riskless_rate = None
 
         # Convert into pd.Series and percentage points
-        self.riskless_rate = self.riskless_rate.dropna().iloc[:,0] / 100.
+        if self.riskless_rate is not None:
+            self.riskless_rate = self.riskless_rate.dropna().iloc[:,0] / 100.
 
     @staticmethod
     def get_sp500_components():
@@ -1754,6 +1764,17 @@ class USStockMarketMetrics(Metrics):
                                   index=pd.DatetimeIndex(['2020-02-20', '2020-04-28', '2020-10-22', '2021-04-27',
                                                           '2022-07-25', '2022-10-31', '2023-02-16', '2023-04-28',
                                                           '2023-07-24']).map(last_bd)),
+                'BNY': pd.Series([900683008, 885051008, 886136000, 878515008, 875481024, 863174016, 876185024,
+                                  825820992, 835950016, 804145024, 807798016, 808280000, 808444992, 789134016,
+                                  778782016, 769073024, 759344000, 752870976, 747816000, 737956992, 727078016,
+                                  717680000, 715433984, 705241024, 697349000, 686379000, 686379045],
+                                  index=pd.DatetimeIndex(['2020-01-01', '2020-03-01', '2020-10-01', '2021-02-01',
+                                                          '2021-04-01', '2021-07-01', '2021-09-01', '2021-10-01',
+                                                          '2021-11-01', '2022-01-01', '2022-05-01', '2022-10-01',
+                                                          '2023-01-01', '2023-04-01', '2023-07-01', '2023-11-01',
+                                                          '2024-01-01', '2024-03-01', '2024-04-01', '2024-07-01',
+                                                          '2024-10-01', '2025-01-01', '2025-04-01', '2025-07-01',
+                                                          '2025-10-01', '2026-04-01', '2026-05-21']).map(last_bd)),
                 'BRK-B': pd.Series([1385994959, 1401356454, 1390707370, 1370951744, 1336348609, 1326572128, 1325373100,
                                     1303476707, 1291212661, 1285751332, 1301126370, 1301981370, 1301100243, 1295970861,
                                     1308070268, 1308414093, 1310805008, 1311384883, 1325192508, 1328446516, 1338051639],
@@ -1863,6 +1884,17 @@ class USStockMarketMetrics(Metrics):
                                                          '2023-02-24', '2023-05-04', '2023-08-03', '2023-11-02',
                                                          '2024-02-26', '2024-05-07', '2024-08-08', '2024-11-06',
                                                          '2025-02-27', '2025-05-08']).map(last_bd)),
+                'HOLX': pd.Series([263302012, 258205678, 258985242, 257009683, 257661792, 256233027, 253487389,
+                                  251420529, 249984116, 249380946, 249653133, 245833759, 246554026, 246118192,
+                                  244942081, 240002802, 234731521, 233376948, 232271906, 226941217, 224389612,
+                                  222845246, 222419282, 222905228, 223244905],
+                                 index=pd.DatetimeIndex(['2020-01-23', '2020-04-23', '2020-07-23', '2020-11-12',
+                                                         '2021-01-21', '2021-04-22', '2021-07-22', '2021-11-11',
+                                                         '2022-01-27', '2022-04-21', '2022-07-21', '2022-11-10',
+                                                         '2023-01-26', '2023-04-25', '2023-07-25', '2023-11-14',
+                                                         '2024-01-25', '2024-04-25', '2024-07-25', '2024-11-21',
+                                                         '2025-01-31', '2025-04-25', '2025-07-25', '2025-11-13',
+                                                         '2026-01-23']).map(last_bd)),
                 'INFO': pd.Series([392948672, 398916408, 396809671, 398358566, 398612292, 398841378, 399080370],
                                   index=pd.DatetimeIndex(['2019-12-31', '2020-02-29', '2020-05-31', '2020-08-31',
                                                           '2021-05-31', '2021-08-31', '2021-12-31']).map(last_bd)),
@@ -1932,6 +1964,13 @@ class USStockMarketMetrics(Metrics):
                 'SBNY': pd.Series([60632000, 63065000, 62929000, 62927000, 62929000, 62250000],
                                   index=pd.DatetimeIndex(['2021-11-15', '2022-02-15', '2022-05-15', '2022-08-15',
                                                           '2022-11-15', '2023-01-31']).map(last_bd)),
+                'SEE': pd.Series([154670740, 155662645, 155676478, 155153238, 154919232, 151989913, 149892825,
+                                  148156720, 148158143, 146084428, 145227126, 144657522, 143961618, 144386418,
+                                  144410149],
+                                  index=pd.DatetimeIndex(['2020-02-21', '2020-04-30', '2020-07-31', '2020-10-23',
+                                                          '2021-02-16', '2021-04-30', '2021-07-31', '2021-10-31',
+                                                          '2022-02-15', '2022-04-29', '2022-07-29', '2022-10-28',
+                                                          '2023-02-15', '2023-04-28', '2023-07-31']).map(last_bd)),
                 'SIVB': pd.Series([51513227, 51796902, 54315140, 56436504, 58687392, 58802627, 58851167, 59082305,
                                    59104124, 59200925],
                                   index=pd.DatetimeIndex(['2020-04-30', '2020-10-31', '2021-04-30', '2021-07-31',
@@ -1990,11 +2029,12 @@ class USStockMarketMetrics(Metrics):
              'CTXS': 'software-application', 'CXO': 'oil-gas-e-p', 'DAY': 'software-application',
              'DFS': 'credit-services', 'DISCK': 'entertainment', 'DISH': 'entertainment', 'DRE': 'reit-industrial',
              'ETFC': 'capital-markets', 'FISV': 'information-technology-services',
-             'FLIR': 'scientific-technical-instruments', 'HBI': 'luxury-goods',
-             'HES': 'oil-gas-e-p', 'INFO': 'financial-data-stock-exchanges', 'IPG': 'advertising-agencies',
+             'FLIR': 'scientific-technical-instruments', 'HBI': 'luxury-goods', 'HES': 'oil-gas-e-p',
+             'HOLX': 'medical-devices', 'INFO': 'financial-data-stock-exchanges', 'IPG': 'advertising-agencies',
              'JNPR': 'communication-equipment', 'JWN': 'department-stores', 'K': 'packaged-foods', 'KSU': 'railroads',
              'MRO': 'oil-gas-e-p', 'MXIM': 'semiconductors', 'NBL': 'oil-gas-e-p', 'NLSN': 'engineering-construction',
              'PBCT': 'banks-regional', 'PXD': 'oil-gas-e-p', 'RTN': 'aerospace-defense', 'SBNY': 'banks-regional',
+             'SEE': 'packaging-containers',
              'SIVB': 'banks-regional', 'TIF': 'luxury-goods', 'TWTR': 'internet-content-information',
              'VAR': 'medical-instruments-supplies', 'WBA': 'pharmaceutical-retailers', 'WCG': 'healthcare-plans',
              'WRK': 'packaging-containers', 'XEC': 'oil-gas-e-p', 'XLNX': 'semiconductors'
@@ -2097,10 +2137,10 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
 
             # If at least 3 columns match, assume this is the composition table
             if len(matching_cols) >= 3:
-                # Since Wikipedia doesn't yet reflect the extension of the index to 29 components, adjusting manually
+                # Since Wikipedia doesn't yet reflect the extension of the index to 30 components, adjusting manually
                 ret = [component for component in df.loc[:, 'Ticker']]
                 ret.remove('RAND.AS')
-                return  ret + ['CVC.AS', 'INPST.AS', 'WDP.BR', 'MICC.AS', 'SBMO.AS']
+                return  ret + ['CVC.AS', 'INPST.AS', 'WDP.BR', 'MICC.AS', 'SBMO.AS', 'AALB.AS']
 
         return None
 
