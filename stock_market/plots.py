@@ -65,7 +65,8 @@ class CapChangePlotter:
 
         return title_prefix, subtitle
 
-    def plot_cap_change_bars(self, changes: pd.Series, mode: str='top', cut_off: int = 40):
+    def plot_cap_change_bars(self, changes: pd.Series, mode: str='top', cut_off: int=40,
+                             graph_title: str=None):
         """
         Plot horizontal bar chart for gainers, losers, or mixed.
         """
@@ -130,7 +131,10 @@ class CapChangePlotter:
                     fontsize=10, fontweight='bold', color=label_color)
 
         # Titles & styling
-        title = f'{self.title_prefix} change in capitalization, %'\
+        if graph_title:
+            title = graph_title
+        else:
+            title = f'{self.title_prefix} change in capitalization, %'\
                     + (f' ({mode} {cut_off})\n' if cut_off < len(changes) and mode != 'mixed' else '\n') + self.subtitle
         ax.set_title(title)
 
@@ -147,7 +151,8 @@ class CapChangePlotter:
 
         return fig, ax
 
-    def plot_top_n_cap_bars(self, title: str, top_n_now: pd.DataFrame, n: int = 20, currency_symbol: str = "€") -> None:
+    def plot_top_n_cap_bars(self, title: str, top_n_now: pd.DataFrame, n: int = 20, currency_symbol: str = "€",
+                            is_market_cap: bool=True) -> None:
         """
         Horizontal bar chart for Top-N entities by current market cap.
         Fully generic — works for any market/index/sector (banks, insurers, etc.).
@@ -305,7 +310,8 @@ class CapChangePlotter:
         start_label = self._get_start_label(self.start_date)
 
         ax.set_title(
-            f"Top-{n} {title} by market capitalization on {self.end_date.strftime("%Y-%m-%d")} (change from {start_label})")
+            f"Top-{n} {title} " + ('by market capitalization ' if is_market_cap else '' )
+            + f"on {self.end_date.strftime("%Y-%m-%d")} (change from {start_label})")
 
         # Generous left margin for long bank names
         fig.subplots_adjust(left=0.38)
