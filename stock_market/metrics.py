@@ -166,6 +166,23 @@ class Metrics:
                     f.columns = pd.MultiIndex.from_tuples(list(zip([self.CLOSE, self.VOLUME], [ticker]*2)))
                     self.data.loc[max(self.data.index[0],f.index[0]):f.index[-1], ([self.CLOSE, self.VOLUME], ticker)] = f
 
+        # Safety net for stock-splits
+        if tickers_to_correct_for_splits is not None:
+            tickers_not_to_correct_for_splits = self.ticker_symbols.keys() - tickers_to_correct_for_splits -\
+                    set(delisted_tickers)
+            for ticker in tickers_not_to_correct_for_splits & set(self.get_current_components()):
+                splits = self.tickers.tickers[ticker].splits
+                if splits is not None and len(splits) > 0 and splits.index[-1].tz_localize(None) > self.data.index[0]:
+                    split_date = splits.index[-1].tz_localize(None)
+                    (st, ed) = self.get_first_entry_last_exit(ticker)
+                    if st < split_date and (ed is None or ed > split_date):
+                        print(f'\tProcessing a stock split reported by Yahoo-Finance API on {split_date:%Y-%m-%d} for {ticker}')
+                        volume_key = (self.VOLUME, ticker)
+                        # Perform adjustment as float, then round and cast back to int64
+                        adjusted_volume = self.data.loc[:split_date - BDay(1), volume_key].astype(float) / splits.iloc[-1]
+                        self.data.loc[:split_date-BDay(1), (self.CLOSE, ticker)] *= splits.iloc[-1]
+                        self.data.loc[:split_date-BDay(1), volume_key] = adjusted_volume.round().astype('int64')
+
         # Currency conversion
         if currency_conversion_df is not None:
             cur_comps_set = set(self.get_current_components())
@@ -957,6 +974,22 @@ class Metrics:
 
         # No matching period found
         return False
+
+    def get_first_entry_last_exit(self, ticker):
+        """
+        Retrieve the first entry date and the last exit date for a ticker as a tuple.
+
+        Args:
+            ticker (str): The ticker symbol to query.
+
+        Returns:
+            tuple: (first_entry, last_exit) where first_entry is the earliest entry date
+                   and last_exit is the most recent exit date (or None if still active).
+        """
+        periods = self.ticker_symbols[ticker]
+        first_entry = periods[0][0]  # Entry date of the first period
+        last_exit = periods[-1][1]  # Exit date of the last period
+        return (first_entry, last_exit)
 
     def get_industry_keys(self):
         """
@@ -1895,6 +1928,9 @@ class USStockMarketMetrics(Metrics):
                                                          '2024-01-25', '2024-04-25', '2024-07-25', '2024-11-21',
                                                          '2025-01-31', '2025-04-25', '2025-07-25', '2025-11-13',
                                                          '2026-01-23']).map(last_bd)),
+                'IBKR': pd.Series([445246976, 445363717, 445439458, 445484364],
+                                  index=pd.DatetimeIndex(['2025-08-06', '2025-10-31', '2026-02-23', '2026-05-05'])
+                                  .map(last_bd)),
                 'INFO': pd.Series([392948672, 398916408, 396809671, 398358566, 398612292, 398841378, 399080370],
                                   index=pd.DatetimeIndex(['2019-12-31', '2020-02-29', '2020-05-31', '2020-08-31',
                                                           '2021-05-31', '2021-08-31', '2021-12-31']).map(last_bd)),
@@ -2089,18 +2125,18 @@ class EuropeBanksStockMarketMetrics(Metrics):
     def get_stoxx_europe_banks_components():
         """
         Returns a list of ticker symbols of Stoxx Europe 600 Banks Index.
-        Based on rebalancing in H2 2025, 53 banks
+        Based on rebalancing in H2 2025, 56 banks
         """
         return ['INGA.AS', 'ABN.AS', 'DBK.DE', 'CBK.DE', 'BNP.PA', 'ACA.PA', 'GLE.PA', 'KBC.BR', 'KBCA.BR',
                 'BIRG.IR', 'A5G.IR',
                 'BBVA.MC', 'BKT.MC', 'CABK.MC', 'SAB.MC', 'SAN.MC', 'UNI.MC', 'EBS.VI', 'BG.VI', 'RBI.VI', 'NDA-FI.HE',
                 'ISP.MI', 'UCG.MI', 'FBK.MI', 'BAMI.MI', 'BPE.MI', 'BMPS.MI', 'BGN.MI', 'BCP.LS',
                 'HSBA.L', 'BARC.L', 'LLOY.L', 'NWG.L', 'INVP.L', 'STAN.L', 'BGEO.L', 'TBCG.L',
-                'BCVN.SW', 'CMBN.SW',
+                'BCVN.SW', 'CMBN.SW', 'VATN.SW',
                 'SEB-A.ST', 'SWED-A.ST', 'SHB-A.ST', 'AZA.ST',
                 'DANSKE.CO', 'ALSYDB.CO', 'JYSK.CO', 'RILBA.CO',
-                'DNB.OL', 'SB1NO.OL',
-                'PEO.WA', 'PKO.WA', 'SPL.WA', 'MBK.WA']
+                'DNB.OL', 'SB1NO.OL', 'SBNOR.OL',
+                'PEO.WA', 'PKO.WA', 'EBP.WA', 'MBK.WA', 'ING.WA']
 
 
 class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
@@ -2157,7 +2193,10 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
         on a given reporting date. I populated the missing days by doing a forward fill followed by a backward fill.
         """
         last_bd = BDay(0).rollback
-        return {'TKWY.AS': pd.Series([150056000, 148808992, 211620992, 221134000, 212620992, 214966000, 214966000,
+        return {'JDEP.AS': pd.Series([484637351, 484637351, 484950100, 485020731, 485020731, 485464923],
+                                     index=pd.DatetimeIndex(['2025-09-26', '2025-10-31', '2025-11-17', '2025-12-19',
+                                                             '2026-02-28', '2026-04-07']).map(last_bd)),
+                'TKWY.AS': pd.Series([150056000, 148808992, 211620992, 221134000, 212620992, 214966000, 214966000,
                                       213476000, 15966000, 219966000, 219966000, 228942000, 214407008, 206252000,
                                       205955008, 205955008, 210923008, 197694000, 198302000, 199916234],
                                      index=pd.DatetimeIndex([
@@ -2166,3 +2205,7 @@ class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
                                          '2022-12-30', '2023-03-31', '2023-06-30', '2023-09-29',
                                          '2023-12-29', '2024-03-28', '2024-06-28', '2024-09-30',
                                          '2024-12-31', '2025-03-31', '2025-06-30', '2025-09-30']).map(last_bd))}
+
+    def get_industry_keys(self):
+        return super().get_industry_keys() | \
+            {'JDEP.AS': 'packaged-foods', 'TKWY.AS': 'internet-retail'}
