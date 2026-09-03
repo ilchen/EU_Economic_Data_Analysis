@@ -209,7 +209,11 @@ class Metrics:
             #     shares_outst = hist_shares_outs[ticker]
 
             else:
-                shares_outst = self.tickers.tickers[ticker].get_shares_full(start=start).tz_localize(None)
+                shares_outst = self.tickers.tickers[ticker].get_shares_full(start=start)
+                if shares_outst is None or shares_outst.empty:
+                    raise ValueError(f'No data on shares outstanding for {ticker}')
+                shares_outst = shares_outst.tz_localize(None)
+
                 # Unfortunately Yahoo-Finance occasionally reports duplicate values for shares outstanding
                 # for the same date. In such cases I take the most recent value.
                 shares_outst = shares_outst.groupby(level=0).last()
@@ -808,60 +812,121 @@ class Metrics:
                     except (KeyError, IndexError):
                         pass
 
-            # === FORWARD ROE ===
+            # ------------------------------------------------------------------
+            # Forward ROE & Forward P/B
+            # ------------------------------------------------------------------
             try:
                 earnings_est = t.get_earnings_estimate()
 
-                # Get earnings estimates
-                eps_current = None
-                eps_target = None
+                eps_0y = (earnings_est.loc["0y", "avg"]
+                          if "0y" in earnings_est.index else None)
+                eps_target = (earnings_est.loc[target_period, "avg"]
+                              if target_period in earnings_est.index else None)
 
-                if "0y" in earnings_est.index:
-                    eps_current = earnings_est.loc["0y", "avg"]
-                if target_period in earnings_est.index:
-                    eps_target = earnings_est.loc[target_period, "avg"]
+                if pd.isna(eps_target) or eps_target == 0:
+                    continue
 
-                if pd.notna(eps_target) and eps_target != 0:
-                    # Last reported book value per share (beginning of current year)
-                    book_value_begin = info.get('bookValue', 0.0)
-                    if pd.isna(book_value_begin):
-                        book_value_begin = 0.0
+                # --------------------------------------------------------------
+                # 1. Reliable beginning-of-current-fiscal-year BVPS (BV₀)
+                # --------------------------------------------------------------
+                BV0 = None
+                shares_series = self.shares_outstanding.get(ticker)
 
-                    payout_ratio = info.get('payoutRatio', 0.0)
-                    if pd.isna(payout_ratio):
-                        payout_ratio = 0.0
+                bs = t.balance_sheet
+                if bs is not None and not bs.empty\
+                        and shares_series is not None and not shares_series.empty:
 
-                    # Step 1: Project book value at end of current year
-                    retained_current = eps_current * (1 - payout_ratio) if pd.notna(eps_current) else 0.0
-                    book_value_end_current = book_value_begin + retained_current
+                    equity_candidates = [
+                        'Stockholders Equity',
+                        'Total Stockholders Equity',
+                        'Common Stock Equity',
+                        'Total Equity Gross Minority Interest',
+                        'Total Equity'
+                    ]
+                    equity_row = next((r for r in equity_candidates if r in bs.index), None)
 
-                    # Step 2: For next year, use end-of-current as beginning
-                    if target_period == "+1y":
-                        book_value_begin_next = book_value_end_current
-                    else:
-                        book_value_begin_next = book_value_begin
+                    if equity_row is not None:
+                        last_fy_end = info.get('lastFiscalYearEnd')
+                        col = None
 
-                    # Step 3: Project book value at end of target year
-                    retained_target = eps_target * (1 - payout_ratio)
-                    book_value_end_target = book_value_begin_next + retained_target
+                        if last_fy_end is not None:
+                            last_fy_end = pd.Timestamp(last_fy_end).normalize()
+                            cols = pd.DatetimeIndex(bs.columns)
+                            # Accept a column within ±15 days of the reported FY end
+                            candidates = cols[(cols >= last_fy_end - pd.Timedelta(days=15)) &
+                                              (cols <= last_fy_end + pd.Timedelta(days=15))]
+                            if len(candidates) > 0:
+                                col = candidates[-1]  # most recent acceptable
+                            else:
+                                # nearest column that is not after the FY end
+                                earlier = cols[cols <= last_fy_end + pd.Timedelta(days=15)]
+                                if len(earlier) > 0:
+                                    col = earlier[-1]
 
-                    # Step 4: Average book equity for the target year
-                    avg_book_equity = (book_value_begin_next + book_value_end_target) / 2
+                        # Fallback: second-most-recent annual column
+                        # (normally the prior year-end when the latest column is still intra-year)
+                        if col is None and len(bs.columns) >= 2:
+                            col = bs.columns[1]
 
-                    # Step 5: Forward ROE
-                    if avg_book_equity > 0:
-                        forward_roe = eps_target / avg_book_equity
-                        ret.loc[ticker, 'Forward ROE'] = forward_roe
+                        if col is not None:
+                            equity = bs.loc[equity_row, col]
+                            if pd.notna(equity):
+                                # Look up shares outstanding on (or nearest to) that date
+                                # from the class’s already-cleaned historical series
+                                try:
+                                    # Exact match or nearest prior trading day
+                                    if col in shares_series.index:
+                                        shares = shares_series.loc[col]
+                                    else:
+                                        # asof / nearest previous
+                                        shares = shares_series.asof(col)
+                                    if pd.notna(shares) and shares > 0:
+                                        BV0 = float(equity) / float(shares)
+                                except Exception:
+                                    pass
 
-                    # Step 6: Forward P/B
-                    market_price = info.get('currentPrice') or info.get('regularMarketPrice')
-                    if ticker.endswith('.L'):
-                        market_price /= 100.
-                    if pd.notna(market_price) and market_price > 0:
-                        ret.loc[ticker, 'Forward P/B'] = market_price / book_value_end_target
+                # Ultimate fallback – only safe early in the fiscal year
+                if BV0 is None or pd.isna(BV0) or BV0 <= 0:
+                    BV0 = info.get('bookValue', 0.0) or 0.0
+                    if pd.isna(BV0):
+                        BV0 = 0.0
+
+                payout = info.get('payoutRatio', 0.0) or 0.0
+                if pd.isna(payout):
+                    payout = 0.0
+
+                # --------------------------------------------------------------
+                # 2. Clean-surplus projection – correct branching for both horizons
+                # --------------------------------------------------------------
+                retained_0y = (eps_0y * (1.0 - payout)) if pd.notna(eps_0y) else 0.0
+                BV_end_current = BV0 + retained_0y
+
+                if target_period == "0y":
+                    BV_begin_target = BV0
+                    retained_target = retained_0y
+                else:  # "+1y"
+                    BV_begin_target = BV_end_current
+                    retained_target = eps_target * (1.0 - payout)
+
+                BV_end_target = BV_begin_target + retained_target
+
+                # --------------------------------------------------------------
+                # 3. Forward ROE (average equity) and Forward P/B
+                # --------------------------------------------------------------
+                avg_BV = (BV_begin_target + BV_end_target) / 2.0
+                if avg_BV > 0:
+                    ret.loc[ticker, 'Forward ROE'] = eps_target / avg_BV
+
+                price = info.get('currentPrice') or info.get('regularMarketPrice')
+                if ticker.endswith('.L') and price is not None:
+                    price = price / 100.0
+
+                if pd.notna(price) and price > 0 and BV_end_target > 0:
+                    ret.loc[ticker, 'Forward P/B'] = price / BV_end_target
 
             except Exception:
-                pass  # Leave as NaN if any data is missing
+                # Leave Forward ROE / Forward P/B as NaN
+                pass
 
         return ret
 
@@ -1276,7 +1341,8 @@ class Metrics:
                 else:
                     eva = (roic - wacc) * avg_invested_capital
                 # mva = market_debt + market_equity - current_gross_debt - invested_capital
-                mva = market_debt + market_equity - current_gross_debt - current_total_equity
+                # mva = market_debt + market_equity - current_gross_debt - current_total_equity
+                mva = market_debt + market_equity - invested_capital
 
                 # Currency conversion if required
                 currency = ticker.info.get('financialCurrency')
@@ -1810,13 +1876,15 @@ class USStockMarketMetrics(Metrics):
                                                           '2025-10-01', '2026-04-01', '2026-05-21']).map(last_bd)),
                 'BRK-B': pd.Series([1385994959, 1401356454, 1390707370, 1370951744, 1336348609, 1326572128, 1325373100,
                                     1303476707, 1291212661, 1285751332, 1301126370, 1301981370, 1301100243, 1295970861,
-                                    1308070268, 1308414093, 1310805008, 1311384883, 1325192508, 1328446516, 1338051639],
+                                    1308070268, 1308414093, 1310805008, 1311384883, 1325192508, 1328446516, 1338051639,
+                                    1342836639, 1378545639, 1372820139],
                                    index=pd.DatetimeIndex(['2020-02-13', '2020-07-30', '2020-08-23', '2020-10-26',
                                                            '2021-02-16', '2021-04-22', '2021-07-26', '2021-10-27',
                                                            '2022-02-14', '2022-04-20', '2022-07-26', '2022-10-26',
                                                            '2023-02-13', '2023-04-25', '2023-07-26', '2023-10-24',
                                                            '2024-02-12', '2024-04-19', '2024-07-23', '2024-10-21',
-                                                           '2025-02-10']).map(last_bd)),
+                                                           '2025-02-10', '2025-04-21', '2025-07-21', '2025-10-20'])
+                                   .map(last_bd)),
                 'CERN': pd.Series([311937692, 304348600, 305381551, 306589898, 301317068, 294222760, 294098094],
                                   index=pd.DatetimeIndex(['2020-01-28', '2020-04-23', '2020-07-22', '2020-10-21',
                                                           '2021-04-30', '2021-10-25', '2022-04-26']).map(last_bd)),
@@ -1835,6 +1903,17 @@ class USStockMarketMetrics(Metrics):
                                                           '2021-10-26', '2022-01-25', '2022-04-26', '2022-08-25',
                                                           '2022-10-27', '2023-01-31', '2023-05-31', '2023-11-30',
                                                           '2024-01-31', '2024-04-25', '2024-10-28']).map(last_bd)),
+                'CTRA': pd.Series([398575510, 398575510, 398579881, 398579881, 399419748, 399419748, 399664181,
+                                   813577639, 813757948, 805805159, 795595177, 788467351, 768258911, 757453231,
+                                   755045540, 752191690, 751847432, 744232925, 739274446, 736613020, 764151477,
+                                   763260740, 763139972, 761377552, 759272715, 759358254],
+                                  index=pd.DatetimeIndex(['2020-02-19', '2020-04-28', '2020-07-29', '2020-10-28',
+                                                          '2021-02-22', '2021-04-28', '2021-07-28', '2021-11-01',
+                                                          '2022-02-24', '2022-05-02', '2022-08-02', '2022-11-02',
+                                                          '2023-02-24', '2023-05-03', '2023-08-04', '2023-11-03',
+                                                          '2024-02-21', '2024-05-01', '2024-07-31', '2024-10-29',
+                                                          '2025-02-14', '2025-04-30', '2025-07-31', '2025-10-30',
+                                                          '2026-02-13', '2026-04-30']).map(last_bd)),
                 'CTXS': pd.Series([123450644, 123123572, 124167045, 124230000, 124722872, 126579926, 126885081],
                                   index=pd.DatetimeIndex(['2020-04-28', '2020-10-23', '2021-04-29', '2021-06-30',
                                                           '2021-11-01', '2022-04-27', '2022-07-18']).map(last_bd)),
@@ -2062,7 +2141,7 @@ class USStockMarketMetrics(Metrics):
             {'ABMD': 'medical-devices', 'AGN': 'drug-manufacturers-general', 'ALXN': 'drug-manufacturers-general',
              'ANSS': 'software-application', 'ATVI': 'electronic-gaming-multimedia',
              'CERN': 'health-information-services', 'CMA': 'banks-regional', 'CTLT': 'diagnostics-research',
-             'CTXS': 'software-application', 'CXO': 'oil-gas-e-p', 'DAY': 'software-application',
+             'CTRA': 'oil-gas-e-p', 'CTXS': 'software-application', 'CXO': 'oil-gas-e-p', 'DAY': 'software-application',
              'DFS': 'credit-services', 'DISCK': 'entertainment', 'DISH': 'entertainment', 'DRE': 'reit-industrial',
              'ETFC': 'capital-markets', 'FISV': 'information-technology-services',
              'FLIR': 'scientific-technical-instruments', 'HBI': 'luxury-goods', 'HES': 'oil-gas-e-p',
