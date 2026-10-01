@@ -8,6 +8,7 @@ So far I created the following notebooks (following a given link lets you see th
 * [Analysis of Eurozone Money Supply](./Money_Supply_Eurozone.ipynb), plus [a similar analysis for the US](https://github.com/ilchen/US_Economic_Data_Analysis/blob/main/Money_Supply.ipynb)
 * [Analysis of Quantitative Easing and Tapering by the ECB](./Quantitative_Easing_and_Tapering_Eurozone.ipynb)
 * [Analysis of Eurozone GDP, its composition by industry, and trends in its make-up](./GDP_Composition_Eurozone.ipynb), plus [a similar analysis for the US](https://github.com/ilchen/US_Economic_Data_Analysis/blob/main/GDP_Composition.ipynb)
+* [Eurozone industrial production, sector growth, and manufacturing trends](./Industrial_Production_Eurozone.ipynb)
 * [Analysis of Eurozone Labor productivity (incl. comparison with that in the US)](./Labor_Productivity.ipynb)
 * [Analysis of disposable income and savings rates of Eurozone individuals](./Disposable_Income_and_Savings_Eurozone.ipynb), plus [a similar analysis for the US](https://github.com/ilchen/US_Economic_Data_Analysis/blob/main/Disposable_Income_and_Savings.ipynb)
 * [Analysis for Stoxx Europe 600 Banks Index](./Stock_Market_Stoxx_Europe_Banks.ipynb) & [Analysis for the AEX Index](./Stock_Market_NL.ipynb), plus [a similar analysis of US Stock Market, including various metrics on the S&P 500 Index](https://github.com/ilchen/US_Economic_Data_Analysis/blob/main/Stock_Market.ipynb)
@@ -50,6 +51,10 @@ jupyter notebook Quantitative_Easing_and_Tapering_Eurozone.ipynb
 or
 ```commandline
 jupyter notebook GDP_Composition_Eurozone.ipynb
+```
+or
+```commandline
+jupyter notebook Industrual_Production_Eurozone.ipynb
 ```
 or
 ```commandline
