@@ -2224,7 +2224,7 @@ class EuropeBanksStockMarketMetrics(Metrics):
     def get_stoxx_europe_banks_components():
         """
         Returns a list of ticker symbols of Stoxx Europe 600 Banks Index.
-        Based on rebalancing in H2 2025, 56 banks
+        Based on rebalancing in H2 2026, 57 banks
         """
         return ['INGA.AS', 'ABN.AS', 'DBK.DE', 'CBK.DE', 'BNP.PA', 'ACA.PA', 'GLE.PA', 'KBC.BR', 'KBCA.BR',
                 'BIRG.IR', 'A5G.IR',
@@ -2235,7 +2235,7 @@ class EuropeBanksStockMarketMetrics(Metrics):
                 'SEB-A.ST', 'SWED-A.ST', 'SHB-A.ST', 'AZA.ST',
                 'DANSKE.CO', 'ALSYDB.CO', 'JYSK.CO', 'RILBA.CO',
                 'DNB.OL', 'SB1NO.OL', 'SBNOR.OL',
-                'PEO.WA', 'PKO.WA', 'EBP.WA', 'MBK.WA', 'ING.WA']
+                'PEO.WA', 'PKO.WA', 'EBP.WA', 'MBK.WA', 'ING.WA', 'MIL.WA']
 
 
 class NLStockMarketMetrics(EuropeBanksStockMarketMetrics):
